@@ -1,0 +1,28 @@
+name: 自动部署问卷到腾讯云
+
+on:
+  push:
+    branches:
+      - main  # 只要你往 main 分支推代码，就会触发自动更新
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 安装依赖并打包代码
+        run: |
+          npm install
+          npm run build
+
+      - name: 登录腾讯云并发布网页
+        run: |
+          npm install -g @cloudbase/cli
+          tcb login --apiKeyId ${{ secrets.TCB_SECRET_ID }} --apiKey ${{ secrets.TCB_SECRET_KEY }}
+          tcb hosting deploy ./dist / -e ${{ secrets.TCB_ENV_ID }}
