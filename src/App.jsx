@@ -1,192 +1,260 @@
 import { useState } from 'react';
 import data from './data.json';
+import cloudbase from '@cloudbase/js-sdk'; // 新增：引入腾讯云工具包
 
 function App() {
-  const [step, setStep] = useState(1);
-  const [childAge, setChildAge] = useState('');
+  const [step, setStep] = useState(0); 
+  
+  // 基础信息收集（已删除微信号收集，保护隐私）
+  const [userInfo, setUserInfo] = useState({
+    role: '',
+    childName: '',
+    childGender: '',
+    childAge: ''
+  });
+
   const [parentAnswers, setParentAnswers] = useState({});
   const [childAnswers, setChildAnswers] = useState({});
+  const [childConsent, setChildConsent] = useState(null); 
+  const [extractionCode, setExtractionCode] = useState(''); 
 
+  const handleUserInfoChange = (field, value) => setUserInfo({ ...userInfo, [field]: value });
   const handleParentChange = (questionId, value) => setParentAnswers({ ...parentAnswers, [questionId]: value });
   const handleChildChange = (questionId, value) => setChildAnswers({ ...childAnswers, [questionId]: value });
 
-  const handleNextStepParent = () => {
-    if (!childAge) { alert("请先填写孩子的年龄哦！"); return; }
-    if (parseInt(childAge) > 12) setStep(2); else setStep(3);
+  // 生成 6 位随机提取码
+  const generateCode = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
   };
 
-  const handleNextStepChild = () => setStep(3);
+  // 🌟 核心修改：异步提交数据到腾讯云数据库
+  const submitForm = async () => {
+    const code = generateCode();
+    setExtractionCode(code);
+    
+    // 准备要打包上传的所有数据
+    const finalData = {
+      userInfo,
+      parentAnswers,
+      childAnswers: childConsent ? childAnswers : '未填写',
+      extractionCode: code,
+      submitTime: new Date() // 记录精准提交时间
+    };
 
-  const calculateResult = (answers, versionData) => {
-    let totalScore = 0;
-    let dimensionScores = { "厌学情绪": 0, "厌学行为": 0, "躯体敏感性": 0, "同伴关系与霸凌": 0, "师生关系与学校环境适应": 0, "家庭厌学风险": 0 };
-    versionData.forEach(item => {
-      const score = answers[item.id] || 0;
-      totalScore += score;
-      if (dimensionScores[item.dimension] !== undefined) dimensionScores[item.dimension] += score;
-    });
+    try {
+      // 1. 呼叫腾讯云环境 (这里已经填好你的环境ID)
+      const app = cloudbase.init({
+        env: 'yanxue-app-d5gg8yx759d5e6070' 
+      });
 
-    let suggestion = "";
-    let riskLevel = ""; // 用于控制颜色主题
-    if (totalScore <= 7) { suggestion = "整体状态良好，继续保持正向引导。"; riskLevel = "low"; }
-    else if (totalScore <= 15) { suggestion = "存在轻度厌学倾向，建议开始关注并改善亲子沟通模式。"; riskLevel = "medium"; }
-    else if (totalScore <= 23) { suggestion = "存在中度厌学问题，建议尽快介入，必要时寻求专业心理辅导。"; riskLevel = "high"; }
-    else { suggestion = "存在重度厌学风险！强烈建议立即寻求专业心理咨询或干预。"; riskLevel = "severe"; }
+      // 2. 执行匿名授权登录 (敲门砖)
+      const auth = app.auth();
+      await auth.anonymousAuthProvider().signIn();
 
-    return { totalScore, dimensionScores, suggestion, riskLevel };
+      // 3. 连接数据库，写入 survey_results 集合
+      const db = app.database();
+      await db.collection('survey_results').add(finalData);
+      
+      console.log("太棒了！数据已成功写入腾讯云数据库！");
+      
+      // 4. 数据安全落库后，再跳转到成功页
+      setStep(3); 
+    } catch (error) {
+      console.error("数据写入失败:", error);
+      alert("网络好像有点开小差，请重新点击提交试试哦！");
+    }
   };
 
-  // 小组件：精美进度条
-  const ProgressBar = ({ label, score }) => {
-    const percentage = (score / 5) * 100;
-    // 分数越高越危险：≥4分红色，2-3分橙色，0-1分绿色
-    const color = score >= 4 ? '#ff4d4f' : score >= 2 ? '#faad14' : '#52c41a';
-    return (
-      <div style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginBottom: '6px' }}>
-          <span style={{ fontWeight: score >= 4 ? '600' : '400', color: '#333' }}>{label}</span>
-          <span style={{ fontWeight: 'bold', color }}>{score} / 5 分</span>
-        </div>
-        <div style={{ width: '100%', height: '8px', backgroundColor: '#f0f0f0', borderRadius: '4px', overflow: 'hidden' }}>
-          <div style={{ width: `${percentage}%`, height: '100%', backgroundColor: color, transition: 'width 1s ease-in-out', borderRadius: '4px' }}></div>
-        </div>
-      </div>
-    );
+  const goFromInfoToParent = () => {
+    if (!userInfo.role || !userInfo.childName || !userInfo.childGender || !userInfo.childAge) {
+      alert("请完整填写所有基本信息，以便为您生成专属报告哦！");
+      return;
+    }
+    setStep(1);
+  };
+
+  const goFromParentToNext = () => {
+    if (Object.keys(parentAnswers).length < data.parentQuestions.length) {
+      alert("请回答完所有的题目再继续哦！");
+      return;
+    }
+    if (parseInt(userInfo.childAge) >= 12) {
+      setStep(2);
+    } else {
+      submitForm();
+    }
+  };
+
+  const goFromChildToNext = () => {
+    if (childConsent === true && Object.keys(childAnswers).length < data.childQuestions.length) {
+      alert("请回答完所有的题目再提交哦！");
+      return;
+    }
+    submitForm();
   };
 
   return (
     <div style={{ maxWidth: '650px', margin: '40px auto', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#333' }}>
       
-      {/* 顶部标题区始终保留 */}
       <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-        <h1 style={{ color: '#1a365d', margin: '0 0 10px 0', fontSize: '28px' }}>多维厌学风险评估系统</h1>
-        <p style={{ color: '#718096', fontSize: '15px', margin: 0 }}>基于心理学量表的专业筛查工具</p>
+        <h1 style={{ color: '#1a365d', margin: '0 0 10px 0', fontSize: '28px' }}>青少年厌学风险多维自检</h1>
+        <p style={{ color: '#718096', fontSize: '15px', margin: 0 }}>专业筛查工具 · 私密安全 · 专属分析</p>
       </div>
 
       <div style={{ backgroundColor: '#fff', borderRadius: '16px', boxShadow: '0 10px 25px rgba(0,0,0,0.05)', padding: '30px', border: '1px solid #edf2f7' }}>
         
-        {step === 1 && (
-          <div>
+        {step === 0 && (
+          <div style={{ animation: 'fadeIn 0.5s' }}>
             <div style={{ backgroundColor: '#ebf8ff', padding: '16px 20px', borderRadius: '12px', marginBottom: '25px', borderLeft: '4px solid #3182ce' }}>
-              <h3 style={{ margin: '0 0 8px 0', color: '#2b6cb0', display: 'flex', alignItems: 'center' }}>📝 第一阶段：父母视角评估</h3>
-              <p style={{ margin: 0, fontSize: '14px', color: '#4a5568', lineHeight: '1.5' }}>请家长根据孩子近一个月的真实情况，凭第一直觉选择“是”或“否”。</p>
+              <h3 style={{ margin: '0 0 8px 0', color: '#2b6cb0' }}>🛡️ 测评建档与隐私保护</h3>
+              <p style={{ margin: 0, fontSize: '14px', color: '#4a5568', lineHeight: '1.5' }}>
+                完成自检后，您将获得专属的风险评估报告。请填写以下基础信息，我们将对您的隐私严格保密。
+              </p>
             </div>
-            {data.parentVersion.map((item, index) => (
-              <div key={item.id} style={{ marginBottom: '16px', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '10px', transition: 'all 0.2s' }}>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>1. 您的身份是？</label>
+                <select value={userInfo.role} onChange={e => handleUserInfoChange('role', e.target.value)} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e0', fontSize: '15px' }}>
+                  <option value="">请选择...</option>
+                  <option value="母亲">母亲</option>
+                  <option value="父亲">父亲</option>
+                  <option value="其他照顾者">其他照顾者</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>2. 孩子的姓名或昵称（仅用于报告称呼）</label>
+                <input type="text" value={userInfo.childName} onChange={e => handleUserInfoChange('childName', e.target.value)} placeholder="如：豆豆" style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e0', fontSize: '15px', boxSizing: 'border-box' }} />
+              </div>
+
+              <div style={{ display: 'flex', gap: '20px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>3. 孩子性别</label>
+                  <select value={userInfo.childGender} onChange={e => handleUserInfoChange('childGender', e.target.value)} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e0', fontSize: '15px' }}>
+                    <option value="">请选择</option>
+                    <option value="男">男孩</option>
+                    <option value="女">女孩</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>4. 孩子年龄</label>
+                  <input type="number" value={userInfo.childAge} onChange={e => handleUserInfoChange('childAge', e.target.value)} placeholder="如：13" style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #cbd5e0', fontSize: '15px', boxSizing: 'border-box' }} />
+                </div>
+              </div>
+            </div>
+
+            <button onClick={goFromInfoToParent} style={{ marginTop: '30px', width: '100%', padding: '16px', backgroundColor: '#3182ce', color: 'white', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 14px rgba(49, 130, 206, 0.3)' }}>开始测评</button>
+          </div>
+        )}
+
+        {step === 1 && (
+          <div style={{ animation: 'fadeIn 0.5s' }}>
+            <div style={{ backgroundColor: '#ebf8ff', padding: '16px 20px', borderRadius: '12px', marginBottom: '25px', borderLeft: '4px solid #3182ce' }}>
+              <h3 style={{ margin: '0 0 8px 0', color: '#2b6cb0' }}>第一部分：家长视角评估</h3>
+              <p style={{ margin: 0, fontSize: '14px', color: '#4a5568', lineHeight: '1.5' }}>请根据{userInfo.childName}最近3个月的实际情况作答。</p>
+            </div>
+            {data.parentQuestions.map((item, index) => (
+              <div key={item.id} style={{ marginBottom: '16px', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '10px' }}>
                 <p style={{ margin: '0 0 12px 0', fontWeight: '500', color: '#2d3748' }}>
-                  <span style={{ color: '#cbd5e0', marginRight: '8px' }}>{index + 1}.</span>
-                  {item.question}
+                  <span style={{ color: '#cbd5e0', marginRight: '8px' }}>{index + 1}.</span>{item.text}
                 </p>
                 <div style={{ display: 'flex', gap: '30px' }}>
-                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '15px' }}>
-                    <input type="radio" name={item.id} value={1} onChange={() => handleParentChange(item.id, 1)} style={{ width: '18px', height: '18px', accentColor: '#3182ce' }} /> 是
+                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input type="radio" name={item.id} value={1} checked={parentAnswers[item.id] === 1} onChange={() => handleParentChange(item.id, 1)} style={{ width: '18px', height: '18px' }} /> 是
                   </label>
-                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '15px' }}>
-                    <input type="radio" name={item.id} value={0} onChange={() => handleParentChange(item.id, 0)} style={{ width: '18px', height: '18px', accentColor: '#3182ce' }} /> 否
+                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input type="radio" name={item.id} value={0} checked={parentAnswers[item.id] === 0} onChange={() => handleParentChange(item.id, 0)} style={{ width: '18px', height: '18px' }} /> 否
                   </label>
                 </div>
               </div>
             ))}
-            <div style={{ marginTop: '30px', padding: '24px', backgroundColor: '#f8fafc', borderRadius: '12px', textAlign: 'center', border: '1px dashed #cbd5e0' }}>
-              <label style={{ fontSize: '16px', fontWeight: '600', color: '#2d3748' }}>
-                为生成精准报告，请填写孩子年龄：
-                <input type="number" value={childAge} onChange={(e) => setChildAge(e.target.value)} style={{ marginLeft: '12px', padding: '10px', width: '80px', border: '2px solid #e2e8f0', borderRadius: '8px', fontSize: '16px', outline: 'none' }} placeholder="如: 13" />
-              </label>
-            </div>
-            <button onClick={handleNextStepParent} style={{ marginTop: '25px', width: '100%', padding: '16px', backgroundColor: '#3182ce', color: 'white', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 14px rgba(49, 130, 206, 0.3)' }}>生成评估报告</button>
+            <button onClick={goFromParentToNext} style={{ marginTop: '25px', width: '100%', padding: '16px', backgroundColor: '#3182ce', color: 'white', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer' }}>下一步</button>
           </div>
         )}
 
         {step === 2 && (
-          <div>
+          <div style={{ animation: 'fadeIn 0.5s' }}>
              <div style={{ backgroundColor: '#f0fff4', padding: '16px 20px', borderRadius: '12px', marginBottom: '25px', borderLeft: '4px solid #38a169' }}>
-              <h3 style={{ margin: '0 0 8px 0', color: '#276749', display: 'flex', alignItems: 'center' }}>👦👧 第二阶段：孩子自评视角</h3>
-              <p style={{ margin: 0, fontSize: '14px', color: '#4a5568', lineHeight: '1.5' }}>请把手机交给孩子。请你根据近一个月的真实感受独立填写。</p>
+              <h3 style={{ margin: '0 0 8px 0', color: '#276749' }}>第二部分：孩子自评视角</h3>
+              <p style={{ margin: 0, fontSize: '14px', color: '#4a5568', lineHeight: '1.5' }}>请把手机交给{userInfo.childName}。如果孩子不愿意填写，可直接选择“否”并提交问卷。</p>
             </div>
-            {data.childVersion.map((item, index) => (
+
+            <div style={{ marginBottom: '25px', padding: '20px', backgroundColor: '#fff', border: '2px dashed #cbd5e0', borderRadius: '10px' }}>
+              <p style={{ margin: '0 0 15px 0', fontWeight: 'bold', textAlign: 'center' }}>{userInfo.childName}，你愿意花两分钟填写一下自己的真实感受吗？</p>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '40px' }}>
+                <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px' }}>
+                  <input type="radio" name="consent" onChange={() => setChildConsent(true)} style={{ width: '20px', height: '20px' }} /> 愿意
+                </label>
+                <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px' }}>
+                  <input type="radio" name="consent" onChange={() => setChildConsent(false)} style={{ width: '20px', height: '20px' }} /> 不愿意
+                </label>
+              </div>
+            </div>
+
+            {childConsent === true && data.childQuestions.map((item, index) => (
               <div key={item.id} style={{ marginBottom: '16px', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '10px' }}>
                 <p style={{ margin: '0 0 12px 0', fontWeight: '500', color: '#2d3748' }}>
-                  <span style={{ color: '#cbd5e0', marginRight: '8px' }}>{index + 1}.</span>{item.question}
+                  <span style={{ color: '#cbd5e0', marginRight: '8px' }}>{index + 1}.</span>{item.text}
                 </p>
                 <div style={{ display: 'flex', gap: '30px' }}>
-                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '15px' }}>
-                    <input type="radio" name={item.id} value={1} onChange={() => handleChildChange(item.id, 1)} style={{ width: '18px', height: '18px', accentColor: '#38a169' }} /> 是
+                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input type="radio" name={item.id} value={1} checked={childAnswers[item.id] === 1} onChange={() => handleChildChange(item.id, 1)} style={{ width: '18px', height: '18px' }} /> 是
                   </label>
-                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '15px' }}>
-                    <input type="radio" name={item.id} value={0} onChange={() => handleChildChange(item.id, 0)} style={{ width: '18px', height: '18px', accentColor: '#38a169' }} /> 否
+                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input type="radio" name={item.id} value={0} checked={childAnswers[item.id] === 0} onChange={() => handleChildChange(item.id, 0)} style={{ width: '18px', height: '18px' }} /> 否
                   </label>
                 </div>
               </div>
             ))}
-            <button onClick={handleNextStepChild} style={{ marginTop: '25px', width: '100%', padding: '16px', backgroundColor: '#38a169', color: 'white', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 14px rgba(56, 161, 105, 0.3)' }}>提交并查看最终报告</button>
+            
+            {childConsent !== null && (
+              <button onClick={goFromChildToNext} style={{ marginTop: '25px', width: '100%', padding: '16px', backgroundColor: '#38a169', color: 'white', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer' }}>提交测评，生成报告</button>
+            )}
           </div>
         )}
 
-        {step === 3 && (() => {
-          const parentResult = calculateResult(parentAnswers, data.parentVersion);
-          const childResult = parseInt(childAge) > 12 ? calculateResult(childAnswers, data.childVersion) : null;
-
-          return (
-            <div style={{ animation: 'fadeIn 0.5s ease-in' }}>
-              <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-                <div style={{ display: 'inline-block', backgroundColor: '#ebf8ff', color: '#3182ce', padding: '6px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold', marginBottom: '16px' }}>评估已完成</div>
-                <h2 style={{ margin: '0 0 10px 0', color: '#1a202c', fontSize: '24px' }}>综合测评结果分析</h2>
-              </div>
-
-              {/* 核心结论卡片 */}
-              <div style={{ background: 'linear-gradient(135deg, #fff5f5 0%, #fed7d7 100%)', borderRadius: '16px', padding: '24px', marginBottom: '30px', boxShadow: '0 4px 10px rgba(254, 215, 215, 0.5)' }}>
-                <h3 style={{ margin: '0 0 10px 0', color: '#c53030', fontSize: '18px', display: 'flex', alignItems: 'center' }}>⚠️ 核心结论与建议</h3>
-                <p style={{ margin: 0, fontSize: '16px', color: '#742a2a', lineHeight: '1.6', fontWeight: '500' }}>{parentResult.suggestion}</p>
-                {parentResult.dimensionScores["家庭厌学风险"] >= 3 && (
-                  <div style={{ marginTop: '12px', padding: '10px 14px', backgroundColor: 'rgba(255,255,255,0.7)', borderRadius: '8px', fontSize: '14px', color: '#9b2c2c' }}>
-                    <strong>系统检测到：</strong>“家庭厌学风险”维度偏高，建议优先调整家庭沟通与教养方式。
-                  </div>
-                )}
-              </div>
-
-              {/* 家长版雷达明细 */}
-              <div style={{ marginBottom: childResult ? '30px' : '40px' }}>
-                <h3 style={{ fontSize: '16px', color: '#4a5568', borderBottom: '2px solid #edf2f7', paddingBottom: '10px', marginBottom: '20px' }}>📊 家长视角维度分析 (得分越高风险越大)</h3>
-                <div style={{ padding: '0 10px' }}>
-                  {Object.entries(parentResult.dimensionScores).map(([dim, score]) => (
-                    <ProgressBar key={`p_${dim}`} label={dim} score={score} />
-                  ))}
-                </div>
-              </div>
-
-              {/* 孩子版雷达明细 */}
-              {childResult && (
-                <div style={{ marginBottom: '40px' }}>
-                  <h3 style={{ fontSize: '16px', color: '#4a5568', borderBottom: '2px solid #edf2f7', paddingBottom: '10px', marginBottom: '20px' }}>📊 孩子视角维度分析 (对照组)</h3>
-                  <div style={{ padding: '0 10px' }}>
-                    {Object.entries(childResult.dimensionScores).map(([dim, score]) => (
-                      <ProgressBar key={`c_${dim}`} label={dim} score={score} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* 强转化引流区 */}
-              <div style={{ background: 'linear-gradient(180deg, #ffffff 0%, #f7fafc 100%)', border: '1px solid #e2e8f0', borderRadius: '16px', padding: '30px 20px', textAlign: 'center', boxShadow: '0 10px 25px rgba(0,0,0,0.05)' }}>
-                <h2 style={{ margin: '0 0 12px 0', color: '#2b6cb0', fontSize: '20px' }}>获取专家深度解读 ＆ 定制干预方案</h2>
-                <p style={{ margin: '0 auto 20px auto', color: '#718096', fontSize: '14px', lineHeight: '1.6', maxWidth: '400px' }}>
-                  仅靠自测无法替代专业诊断。截图保存此报告，添加专属指导老师微信，免费获取**1对1结果分析**与**家庭改善计划**。
-                </p>
-                
-                {/* 替换这里的网络图片链接为你的实际二维码 */}
-                <div style={{ margin: '0 auto', padding: '10px', background: '#fff', borderRadius: '12px', display: 'inline-block', boxShadow: '0 4px 15px rgba(0,0,0,0.08)' }}>
-                  <img 
-                    src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=这里之后换成你的微信号或二维码链接" 
-                    alt="扫码添加专家微信" 
-                    style={{ width: '160px', height: '160px', display: 'block', borderRadius: '8px' }}
-                  />
-                </div>
-                <p style={{ margin: '15px 0 0 0', fontWeight: 'bold', color: '#e53e3e', fontSize: '15px', animation: 'pulse 2s infinite' }}>长按识别二维码，获取深度干预支持 ↑</p>
-              </div>
-
+        {step === 3 && (
+          <div style={{ animation: 'fadeIn 0.5s ease-in', textAlign: 'center' }}>
+            <div style={{ display: 'inline-block', backgroundColor: '#e6fffa', color: '#319795', padding: '8px 20px', borderRadius: '20px', fontSize: '15px', fontWeight: 'bold', marginBottom: '20px' }}>✅ 测评已成功提交</div>
+            <h2 style={{ margin: '0 0 15px 0', color: '#1a202c', fontSize: '24px' }}>{userInfo.childName}的专属报告已生成</h2>
+            
+            <div style={{ backgroundColor: '#fffaf0', border: '1px solid #feebc8', borderRadius: '12px', padding: '20px', marginBottom: '30px', textAlign: 'left' }}>
+              <p style={{ margin: '0 0 10px 0', color: '#dd6b20', fontWeight: 'bold', fontSize: '16px' }}>⚠️ 隐私保护提示：</p>
+              <p style={{ margin: 0, color: '#7b341e', fontSize: '14px', lineHeight: '1.6' }}>
+                为保护{userInfo.childName}的心理健康隐私，报告详细结果已被系统加密保存。仅支持家长点对点私密提取。
+              </p>
             </div>
-          );
-        })()}
+
+            <div style={{ background: 'linear-gradient(180deg, #ffffff 0%, #ebf8ff 100%)', border: '1px solid #bee3f8', borderRadius: '16px', padding: '35px 20px', boxShadow: '0 10px 25px rgba(49, 130, 206, 0.1)' }}>
+              <h3 style={{ margin: '0 0 5px 0', color: '#2b6cb0', fontSize: '18px' }}>第一步：截图保存提取码</h3>
+              
+              <div style={{ margin: '15px auto 25px auto', padding: '15px', background: '#fff', border: '2px dashed #3182ce', borderRadius: '8px', display: 'inline-block' }}>
+                <span style={{ fontSize: '32px', fontWeight: '900', color: '#2b6cb0', letterSpacing: '4px' }}>{extractionCode}</span>
+              </div>
+
+              <h3 style={{ margin: '0 0 15px 0', color: '#2b6cb0', fontSize: '18px' }}>第二步：扫码添加专属顾问</h3>
+              <p style={{ margin: '0 auto 20px auto', color: '#4a5568', fontSize: '14px', lineHeight: '1.6', maxWidth: '400px' }}>
+                发送暗号：<strong>“我是{userInfo.childName}的家长，提取码 {extractionCode}”</strong><br/>
+                即可获取包含多维雷达图的深度定制分析方案。
+              </p>
+              
+              <div style={{ margin: '0 auto', padding: '10px', background: '#fff', borderRadius: '12px', display: 'inline-block', boxShadow: '0 4px 15px rgba(0,0,0,0.08)' }}>
+                {/* 别忘了这里替换真实的二维码链接 */}
+                <img 
+                  src="https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=此处替换二维码" 
+                  alt="扫码添加顾问微信" 
+                  style={{ width: '160px', height: '160px', display: 'block', borderRadius: '8px' }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
       </div>
     </div>
