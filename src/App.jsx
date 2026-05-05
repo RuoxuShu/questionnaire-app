@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import data from './data.json';
 import cloudbase from '@cloudbase/js-sdk'; // 新增：引入腾讯云工具包
 
@@ -12,6 +12,8 @@ function App() {
     childGender: '',
     childAge: ''
   });
+
+  
 
   const [parentAnswers, setParentAnswers] = useState({});
   const [childAnswers, setChildAnswers] = useState({});
