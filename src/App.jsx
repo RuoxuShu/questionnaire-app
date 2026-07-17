@@ -19,7 +19,7 @@ const normalizePhone = phone => phone.replace(/\D/g, '');
 const isValidMainlandMobile = phone => /^1[3-9]\d{9}$/.test(normalizePhone(phone));
 
 const SCORE_DIMENSIONS = ['厌学情绪', '厌学行为', '躯体敏感', '同伴关系', '学校适应', '家庭环境'];
-const COMPANY_NAME = '金合网络科技有限公司';
+const COMPANY_NAME = '金合（广州）网络科技有限公司';
 
 const answerValue = value => (Number(value) === 1 ? 1 : 0);
 
@@ -616,6 +616,7 @@ function AdminPanel() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [reportLoading, setReportLoading] = useState(false);
 
   const queryResult = async () => {
     const trimmedKeyword = keyword.trim();
@@ -681,19 +682,46 @@ function AdminPanel() {
     URL.revokeObjectURL(url);
   };
 
-  const downloadReport = () => {
-    if (!firstRecord || !scoreSummary) return;
-    const html = buildSimpleReportHtml(firstRecord, scoreSummary);
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const code = firstRecord.extractionCode || keyword.trim() || 'survey-result';
-    link.href = url;
-    link.download = code + '-简版报告.html';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+  const downloadReport = async () => {
+    if (!firstRecord) return;
+    setReportLoading(true);
+    setMessage('');
+    try {
+      const app = cloudbase.init({ env: CLOUD_ENV_ID });
+      await app.auth().anonymousAuthProvider().signIn();
+      const response = await app.callFunction({
+        name: 'generateSurveyReport',
+        data: {
+          password,
+          keyword: firstRecord.extractionCode || keyword.trim(),
+        },
+        parse: true,
+      });
+      const payload = typeof response.result === 'string' ? JSON.parse(response.result) : response.result;
+      if (!payload?.ok || !payload.fileBase64) {
+        throw new Error(payload?.message || '生成报告失败');
+      }
+      const binary = atob(payload.fileBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: payload.contentType || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = payload.filename || ((firstRecord.extractionCode || keyword.trim() || 'survey-result') + '-厌学风险评估报告.docx');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setMessage('正式报告已生成并开始下载');
+    } catch (error) {
+      console.error('报告生成失败:', error);
+      setMessage(error.message || '报告生成失败，请稍后重试。');
+    } finally {
+      setReportLoading(false);
+    }
   };
 
 
@@ -740,7 +768,7 @@ function AdminPanel() {
               <p style={{ margin: 0, color: '#718096', fontSize: '14px' }}>提取码：{firstRecord.extractionCode || '-'} · 手机号：{firstRecord.contactPhone || firstRecord.userInfo?.contactPhone || '-'}</p>
             </div>
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <button onClick={downloadReport} style={{ padding: '10px 14px', border: '1px solid #3182ce', background: '#3182ce', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>下载简易报告</button>
+              <button onClick={downloadReport} disabled={reportLoading} style={{ padding: '10px 14px', border: '1px solid #3182ce', background: reportLoading ? '#90cdf4' : '#3182ce', color: '#fff', borderRadius: '8px', cursor: reportLoading ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}>{reportLoading ? '生成中' : '下载正式报告'}</button>
               <button onClick={copyTable} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>复制表格</button>
               <button onClick={downloadCsv} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>下载 CSV</button>
             </div>
