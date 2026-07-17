@@ -19,6 +19,7 @@ const normalizePhone = phone => phone.replace(/\D/g, '');
 const isValidMainlandMobile = phone => /^1[3-9]\d{9}$/.test(normalizePhone(phone));
 
 const SCORE_DIMENSIONS = ['厌学情绪', '厌学行为', '躯体敏感', '同伴关系', '学校适应', '家庭环境'];
+const COMPANY_NAME = '金合网络科技有限公司';
 
 const answerValue = value => (Number(value) === 1 ? 1 : 0);
 
@@ -81,9 +82,160 @@ const csvEscape = value => {
   return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
 };
 
+
 const toCsv = row => {
   const headers = Object.keys(row);
   return [headers.join(','), headers.map(header => csvEscape(row[header])).join(',')].join('\n');
+};
+
+const htmlEscape = value => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const displayValue = value => {
+  if (value === undefined || value === null || value === '') return '-';
+  return String(value);
+};
+
+const formatSubmitTime = value => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return displayValue(value);
+  return date.toLocaleString('zh-CN', { hour12: false });
+};
+
+const getTotalRiskLabel = total => {
+  if (total === '-' || total === undefined || total === null) return '未填写';
+  const score = Number(total);
+  if (score >= 20) return '高关注';
+  if (score >= 10) return '中等关注';
+  return '低关注';
+};
+
+const getDimensionRiskLabel = score => {
+  if (score === '-' || score === undefined || score === null) return '未填写';
+  const value = Number(score);
+  if (value >= 4) return '高';
+  if (value >= 2) return '中';
+  return '低';
+};
+
+const buildReportRadarSvg = scoreSummary => {
+  if (!scoreSummary) return '';
+  const size = 460;
+  const center = size / 2;
+  const radius = 150;
+  const maxScore = 5;
+  const angleForIndex = index => (Math.PI * 2 * index) / SCORE_DIMENSIONS.length - Math.PI / 2;
+  const pointFor = (score, index, pointRadius = radius) => {
+    const angle = angleForIndex(index);
+    const numericScore = Number(score) || 0;
+    const valueRadius = (numericScore / maxScore) * pointRadius;
+    return {
+      x: center + Math.cos(angle) * valueRadius,
+      y: center + Math.sin(angle) * valueRadius,
+    };
+  };
+  const polygonPoints = scores => scores.map((score, index) => {
+    const point = pointFor(score, index);
+    return point.x.toFixed(1) + ',' + point.y.toFixed(1);
+  }).join(' ');
+  const gridPolygon = level => SCORE_DIMENSIONS.map((_, index) => {
+    const point = pointFor(maxScore, index, (radius * level) / maxScore);
+    return point.x.toFixed(1) + ',' + point.y.toFixed(1);
+  }).join(' ');
+  const axisLines = SCORE_DIMENSIONS.map((_, index) => {
+    const point = pointFor(maxScore, index);
+    return '<line x1="' + center + '" y1="' + center + '" x2="' + point.x.toFixed(1) + '" y2="' + point.y.toFixed(1) + '" stroke="#e2e8f0" stroke-width="1" />';
+  }).join('');
+  const labels = SCORE_DIMENSIONS.map((dimension, index) => {
+    const point = pointFor(maxScore, index, radius + 42);
+    return '<text x="' + point.x.toFixed(1) + '" y="' + point.y.toFixed(1) + '" text-anchor="middle" dominant-baseline="middle" font-size="14" font-weight="700" fill="#243b53">' + htmlEscape(dimension) + '</text>';
+  }).join('');
+  const parentDots = scoreSummary.parentDimensionScores.map((score, index) => {
+    const point = pointFor(score, index);
+    return '<circle cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="4" fill="#3182ce" />';
+  }).join('');
+  const childDots = scoreSummary.hasChildAnswers ? scoreSummary.childDimensionScores.map((score, index) => {
+    const point = pointFor(score, index);
+    return '<circle cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="4" fill="#dd6b20" />';
+  }).join('') : '';
+  const childLine = scoreSummary.hasChildAnswers
+    ? '<polygon points="' + polygonPoints(scoreSummary.childDimensionScores) + '" fill="none" stroke="#dd6b20" stroke-width="3" stroke-linejoin="round" />'
+    : '';
+
+  return '<svg viewBox="0 0 ' + size + ' ' + size + '" role="img" aria-label="六维风险雷达图">'
+    + [1, 2, 3, 4, 5].map(level => '<polygon points="' + gridPolygon(level) + '" fill="none" stroke="#d9e2ec" stroke-width="1" />').join('')
+    + axisLines
+    + '<polygon points="' + polygonPoints(scoreSummary.parentDimensionScores) + '" fill="none" stroke="#3182ce" stroke-width="3" stroke-linejoin="round" />'
+    + childLine
+    + parentDots
+    + childDots
+    + labels
+    + '</svg>';
+};
+
+const buildSimpleReportHtml = (record, scoreSummary) => {
+  const userInfo = record?.userInfo || {};
+  const childName = displayValue(userInfo.childName || '未知孩子');
+  const phone = displayValue(record?.contactPhone || userInfo.contactPhone);
+  const submitTime = formatSubmitTime(record?.submitTime);
+  const dimensionRows = SCORE_DIMENSIONS.map((dimension, index) => {
+    const parentScore = scoreSummary.parentDimensionScores[index];
+    const childScore = scoreSummary.childDimensionScores[index];
+    return '<tr>'
+      + '<td>' + htmlEscape(dimension) + '</td>'
+      + '<td class="num parent">' + htmlEscape(parentScore) + '</td>'
+      + '<td>' + htmlEscape(getDimensionRiskLabel(parentScore)) + '</td>'
+      + '<td class="num child">' + htmlEscape(childScore) + '</td>'
+      + '<td>' + htmlEscape(getDimensionRiskLabel(childScore)) + '</td>'
+      + '</tr>';
+  }).join('');
+  const dimensionHighlights = SCORE_DIMENSIONS.map((dimension, index) => ({
+    dimension,
+    score: Math.max(Number(scoreSummary.parentDimensionScores[index]) || 0, scoreSummary.hasChildAnswers ? Number(scoreSummary.childDimensionScores[index]) || 0 : 0),
+  }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+  const focusText = dimensionHighlights.length
+    ? '本次测评中相对需要优先关注的维度为：' + dimensionHighlights.map(item => item.dimension).join('、') + '。建议客服在后续沟通中围绕这些维度追问近期具体事件、持续时间和对上学行为的影响。'
+    : '本次测评暂未显示特别突出的单一风险维度。建议客服结合家长描述，继续了解孩子近期上学意愿、情绪状态和家庭沟通情况。';
+  const childNote = scoreSummary.hasChildAnswers
+    ? '本报告同时包含家长评估与孩子自评，可重点观察双方评分差异较大的维度。'
+    : '本次没有孩子自评数据，报告主要基于家长填写信息生成。';
+  const fileTitle = childName + ' 厌学风险评估简版报告';
+
+  return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" />'
+    + '<title>' + htmlEscape(fileTitle) + '</title>'
+    + '<style>'
+    + 'body{margin:0;background:#eef4f8;color:#172033;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6;}main{width:min(920px,calc(100% - 40px));margin:28px auto 48px;background:white;border-radius:14px;box-shadow:0 18px 45px rgba(31,45,61,.12);overflow:hidden}.cover{position:relative;padding:48px 56px 38px;background:linear-gradient(135deg,#f7fbff,#e7f2fb)}.company{position:absolute;right:28px;top:20px;color:#52657a;font-size:13px;letter-spacing:.5px}.kicker{color:#3182ce;font-weight:700;margin-bottom:10px}.title{font-size:34px;line-height:1.2;color:#14345f;font-weight:800;margin:0 0 12px}.subtitle{color:#5f7189;margin:0}.section{padding:28px 56px;border-top:1px solid #e6edf3}.section h2{font-size:21px;color:#14345f;margin:0 0 16px}.info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px}.info-item{background:#f7fafc;border:1px solid #e3ebf3;border-radius:10px;padding:12px 14px}.label{color:#64748b;font-size:13px}.value{font-weight:700;margin-top:4px}.summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{border-radius:12px;padding:16px;border:1px solid #d9e8f7;background:#f7fbff}.card.orange{background:#fffaf0;border-color:#f8dfb6}.card.gray{background:#f8fafc;border-color:#e2e8f0}.score{font-size:30px;font-weight:800;margin-top:6px}.parent{color:#3182ce}.child{color:#dd6b20}.risk{color:#14345f}.note{background:#f7fafc;border-left:4px solid #3182ce;border-radius:8px;padding:14px 16px;color:#34495e}table{width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden}th,td{padding:11px 12px;border-bottom:1px solid #edf2f7;text-align:left}th{background:#f7fafc;color:#34495e;font-size:13px}.num{text-align:center;font-weight:800}.radar-wrap{display:grid;grid-template-columns:1fr 230px;gap:22px;align-items:center}.radar-wrap svg{width:100%;max-width:520px;display:block;margin:auto}.legend{display:flex;gap:14px;flex-wrap:wrap;color:#4a5568}.legend span:before{content:"";display:inline-block;width:22px;height:3px;margin-right:7px;vertical-align:middle}.legend .p:before{background:#3182ce}.legend .c:before{background:#dd6b20}.suggestions{margin:0;padding-left:20px}.suggestions li{margin:8px 0}.footer{padding:18px 56px 30px;color:#718096;font-size:12px}@media print{body{background:white}main{box-shadow:none;width:100%;margin:0}.section,.cover{padding-left:36px;padding-right:36px}.radar-wrap{grid-template-columns:1fr}}'
+    + '</style></head><body><main>'
+    + '<section class="cover"><div class="company">' + htmlEscape(COMPANY_NAME) + '</div><div class="kicker">内部参考版本</div><h1 class="title">青少年厌学风险多维评估简版报告</h1><p class="subtitle">根据线上问卷自动生成，仅供客服内部沟通和后续咨询参考，不作为临床诊断结论。</p></section>'
+    + '<section class="section"><h2>基础信息表</h2><div class="info-grid">'
+    + '<div class="info-item"><div class="label">孩子姓名/昵称</div><div class="value">' + htmlEscape(childName) + '</div></div>'
+    + '<div class="info-item"><div class="label">联系电话</div><div class="value">' + htmlEscape(phone) + '</div></div>'
+    + '<div class="info-item"><div class="label">年龄</div><div class="value">' + htmlEscape(displayValue(userInfo.childAge)) + '</div></div>'
+    + '<div class="info-item"><div class="label">性别</div><div class="value">' + htmlEscape(displayValue(userInfo.childGender)) + '</div></div>'
+    + '<div class="info-item"><div class="label">家长身份</div><div class="value">' + htmlEscape(displayValue(userInfo.role)) + '</div></div>'
+    + '<div class="info-item"><div class="label">渠道</div><div class="value">' + htmlEscape(displayValue(record?.routeCode)) + '</div></div>'
+    + '<div class="info-item"><div class="label">提取码</div><div class="value">' + htmlEscape(displayValue(record?.extractionCode)) + '</div></div>'
+    + '<div class="info-item"><div class="label">提交时间</div><div class="value">' + htmlEscape(submitTime) + '</div></div>'
+    + '</div></section>'
+    + '<section class="section"><h2>总分摘要</h2><div class="summary">'
+    + '<div class="card"><div class="label">家长总分</div><div class="score parent">' + htmlEscape(scoreSummary.parentTotal) + '</div><div>' + htmlEscape(getTotalRiskLabel(scoreSummary.parentTotal)) + '</div></div>'
+    + '<div class="card orange"><div class="label">孩子总分</div><div class="score child">' + htmlEscape(scoreSummary.childTotal) + '</div><div>' + htmlEscape(getTotalRiskLabel(scoreSummary.childTotal)) + '</div></div>'
+    + '<div class="card gray"><div class="label">报告提示</div><div class="score risk">筛查</div><div>需结合访谈进一步判断</div></div>'
+    + '</div></section>'
+    + '<section class="section"><h2>六维风险表</h2><table><thead><tr><th>维度</th><th>家长评分</th><th>家长风险</th><th>孩子评分</th><th>孩子风险</th></tr></thead><tbody>' + dimensionRows + '</tbody></table></section>'
+    + '<section class="section"><h2>雷达图</h2><div class="radar-wrap"><div>' + buildReportRadarSvg(scoreSummary) + '<div class="legend"><span class="p">家长评分</span>' + (scoreSummary.hasChildAnswers ? '<span class="c">孩子评分</span>' : '') + '</div></div><div class="note">雷达图展示六个维度的相对高低。线条越靠外，说明该维度在问卷中被勾选的风险项越多。</div></div></section>'
+    + '<section class="section"><h2>简短解释文字</h2><p class="note">' + htmlEscape(focusText + childNote) + '</p></section>'
+    + '<section class="section"><h2>后续建议</h2><ul class="suggestions"><li>优先围绕高分维度了解最近 1-3 个月的具体事件、发生频率和持续时间。</li><li>如果躯体敏感得分较高，进一步确认身体不适是否集中出现在上学、考试或特定课程前后。</li><li>如果同伴关系或学校适应得分较高，重点了解同伴冲突、师生互动、课堂压力和校园环境变化。</li><li>如果家庭环境得分较高，沟通时先降低指责和催促强度，再讨论学习安排。</li><li>如出现持续拒学、自伤表达、严重睡眠/饮食问题或明显躯体反应，建议尽快转介线下专业评估。</li></ul></section>'
+    + '<div class="footer">' + htmlEscape(COMPANY_NAME) + ' · 简版报告自动生成</div>'
+    + '</main></body></html>';
 };
 function RadarChart({ scoreSummary }) {
   if (!scoreSummary) return null;
@@ -529,6 +681,21 @@ function AdminPanel() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadReport = () => {
+    if (!firstRecord || !scoreSummary) return;
+    const html = buildSimpleReportHtml(firstRecord, scoreSummary);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const code = firstRecord.extractionCode || keyword.trim() || 'survey-result';
+    link.href = url;
+    link.download = code + '-简版报告.html';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
 
   return (
     <div style={{ maxWidth: '980px', margin: '40px auto', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1a202c', padding: '0 20px' }}>
@@ -573,6 +740,7 @@ function AdminPanel() {
               <p style={{ margin: 0, color: '#718096', fontSize: '14px' }}>提取码：{firstRecord.extractionCode || '-'} · 手机号：{firstRecord.contactPhone || firstRecord.userInfo?.contactPhone || '-'}</p>
             </div>
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button onClick={downloadReport} style={{ padding: '10px 14px', border: '1px solid #3182ce', background: '#3182ce', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>下载简易报告</button>
               <button onClick={copyTable} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>复制表格</button>
               <button onClick={downloadCsv} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>下载 CSV</button>
             </div>
