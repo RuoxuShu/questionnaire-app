@@ -17,6 +17,74 @@ const getRouteCode = () => {
 
 const normalizePhone = phone => phone.replace(/\D/g, '');
 const isValidMainlandMobile = phone => /^1[3-9]\d{9}$/.test(normalizePhone(phone));
+
+const SCORE_DIMENSIONS = ['厌学情绪', '厌学行为', '躯体敏感', '同伴关系', '学校适应', '家庭环境'];
+
+const answerValue = value => (Number(value) === 1 ? 1 : 0);
+
+const calculateScoreSummary = record => {
+  const parentAnswers = record?.parentAnswers || {};
+  const rawChildAnswers = record?.childAnswers;
+  const hasChildAnswers = rawChildAnswers && typeof rawChildAnswers === 'object' && rawChildAnswers !== '未填写';
+  const childAnswers = hasChildAnswers ? rawChildAnswers : {};
+  const parentDimensionScores = Array(SCORE_DIMENSIONS.length).fill(0);
+  const childDimensionScores = hasChildAnswers ? Array(SCORE_DIMENSIONS.length).fill(0) : Array(SCORE_DIMENSIONS.length).fill('-');
+  let parentTotal = 0;
+  let childTotal = hasChildAnswers ? 0 : '-';
+
+  for (let i = 1; i <= 30; i += 1) {
+    const dimensionIndex = (i - 1) % SCORE_DIMENSIONS.length;
+    const parentScore = answerValue(parentAnswers['p' + i]);
+    parentTotal += parentScore;
+    parentDimensionScores[dimensionIndex] += parentScore;
+
+    if (hasChildAnswers) {
+      const childScore = answerValue(childAnswers['c' + i]);
+      childTotal += childScore;
+      childDimensionScores[dimensionIndex] += childScore;
+    }
+  }
+
+  return {
+    parentTotal,
+    childTotal,
+    hasChildAnswers,
+    parentDimensionScores,
+    childDimensionScores,
+  };
+};
+
+const buildResultRow = (record, scoreSummary) => {
+  const userInfo = record?.userInfo || {};
+  const row = {
+    孩子姓名: userInfo.childName || '',
+    手机号: record?.contactPhone || userInfo.contactPhone || '',
+    提取码: record?.extractionCode || '',
+    渠道: record?.routeCode || '',
+    年龄: userInfo.childAge || '',
+    性别: userInfo.childGender || '',
+    家长身份: userInfo.role || '',
+    家长总分: scoreSummary?.parentTotal ?? '',
+    孩子总分: scoreSummary?.childTotal ?? '',
+  };
+
+  SCORE_DIMENSIONS.forEach((dimension, index) => {
+    row['家长_' + dimension] = scoreSummary?.parentDimensionScores?.[index] ?? '';
+    row['孩子_' + dimension] = scoreSummary?.childDimensionScores?.[index] ?? '';
+  });
+
+  return row;
+};
+
+const csvEscape = value => {
+  const text = String(value ?? '');
+  return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+};
+
+const toCsv = row => {
+  const headers = Object.keys(row);
+  return [headers.join(','), headers.map(header => csvEscape(row[header])).join(',')].join('\n');
+};
 function QuestionnaireApp() {
   const [step, setStep] = useState(0); 
   
@@ -369,7 +437,32 @@ function AdminPanel() {
   };
 
   const firstRecord = result?.data?.[0] || null;
+  const scoreSummary = firstRecord ? calculateScoreSummary(firstRecord) : null;
+  const resultRow = firstRecord ? buildResultRow(firstRecord, scoreSummary) : null;
   const displayJson = firstRecord ? JSON.stringify(firstRecord, null, 2) : '';
+
+  const copyTable = async () => {
+    if (!resultRow) return;
+    const headers = Object.keys(resultRow);
+    const tableText = [headers.join('\t'), headers.map(header => resultRow[header]).join('\t')].join('\n');
+    await navigator.clipboard.writeText(tableText);
+    setMessage('已复制表格，可直接粘贴到 Excel');
+  };
+
+  const downloadCsv = () => {
+    if (!resultRow) return;
+    const csv = '\ufeff' + toCsv(resultRow);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const code = firstRecord.extractionCode || keyword.trim() || 'survey-result';
+    link.href = url;
+    link.download = code + '-scores.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const copyJson = async () => {
     if (!displayJson) return;
@@ -433,7 +526,9 @@ function AdminPanel() {
               <h2 style={{ margin: '0 0 6px 0', fontSize: '20px', color: '#1a365d' }}>{firstRecord.userInfo?.childName || '未知孩子'} 的测评记录</h2>
               <p style={{ margin: 0, color: '#718096', fontSize: '14px' }}>提取码：{firstRecord.extractionCode || '-'} · 手机号：{firstRecord.contactPhone || firstRecord.userInfo?.contactPhone || '-'}</p>
             </div>
-            <div style={{ display: 'flex', gap: '10px' }}>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button onClick={copyTable} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>复制表格</button>
+              <button onClick={downloadCsv} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>下载 CSV</button>
               <button onClick={copyJson} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>复制 JSON</button>
               <button onClick={downloadJson} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>下载 JSON</button>
             </div>
@@ -446,7 +541,38 @@ function AdminPanel() {
             <div style={{ background: '#f7fafc', padding: '12px', borderRadius: '8px' }}><strong>渠道</strong><br />{firstRecord.routeCode || '-'}</div>
           </div>
 
-          <pre style={{ margin: 0, padding: '16px', background: '#1a202c', color: '#e2e8f0', borderRadius: '8px', overflowX: 'auto', fontSize: '13px', lineHeight: '1.5' }}>{displayJson}</pre>
+          <div style={{ marginBottom: '18px' }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '17px', color: '#1a365d' }}>自动计分结果</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px', marginBottom: '12px' }}>
+              <div style={{ background: '#ebf8ff', padding: '14px', borderRadius: '8px', border: '1px solid #bee3f8' }}><strong>家长总分</strong><br /><span style={{ fontSize: '24px', color: '#2b6cb0', fontWeight: 'bold' }}>{scoreSummary.parentTotal}</span></div>
+              <div style={{ background: '#fffaf0', padding: '14px', borderRadius: '8px', border: '1px solid #feebc8' }}><strong>孩子总分</strong><br /><span style={{ fontSize: '24px', color: '#c05621', fontWeight: 'bold' }}>{scoreSummary.childTotal}</span></div>
+            </div>
+            <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: '8px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', minWidth: '620px' }}>
+                <thead>
+                  <tr style={{ background: '#f7fafc' }}>
+                    <th style={{ textAlign: 'left', padding: '10px', borderBottom: '1px solid #e2e8f0' }}>维度</th>
+                    <th style={{ textAlign: 'center', padding: '10px', borderBottom: '1px solid #e2e8f0' }}>家长评分</th>
+                    <th style={{ textAlign: 'center', padding: '10px', borderBottom: '1px solid #e2e8f0' }}>孩子评分</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {SCORE_DIMENSIONS.map((dimension, index) => (
+                    <tr key={dimension}>
+                      <td style={{ padding: '10px', borderBottom: '1px solid #edf2f7', fontWeight: 'bold' }}>{dimension}</td>
+                      <td style={{ padding: '10px', borderBottom: '1px solid #edf2f7', textAlign: 'center' }}>{scoreSummary.parentDimensionScores[index]}</td>
+                      <td style={{ padding: '10px', borderBottom: '1px solid #edf2f7', textAlign: 'center' }}>{scoreSummary.childDimensionScores[index]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <details>
+            <summary style={{ cursor: 'pointer', color: '#4a5568', fontWeight: 'bold', marginBottom: '10px' }}>查看原始 JSON</summary>
+            <pre style={{ margin: 0, padding: '16px', background: '#1a202c', color: '#e2e8f0', borderRadius: '8px', overflowX: 'auto', fontSize: '13px', lineHeight: '1.5' }}>{displayJson}</pre>
+          </details>
         </div>
       )}
     </div>
