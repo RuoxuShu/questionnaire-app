@@ -85,6 +85,73 @@ const toCsv = row => {
   const headers = Object.keys(row);
   return [headers.join(','), headers.map(header => csvEscape(row[header])).join(',')].join('\n');
 };
+function RadarChart({ scoreSummary }) {
+  if (!scoreSummary) return null;
+
+  const size = 360;
+  const center = size / 2;
+  const radius = 116;
+  const maxScore = 5;
+  const angleForIndex = index => (Math.PI * 2 * index) / SCORE_DIMENSIONS.length - Math.PI / 2;
+  const pointFor = (score, index, pointRadius = radius) => {
+    const angle = angleForIndex(index);
+    const valueRadius = (Number(score) / maxScore) * pointRadius;
+    return {
+      x: center + Math.cos(angle) * valueRadius,
+      y: center + Math.sin(angle) * valueRadius,
+    };
+  };
+  const polygonPoints = scores => scores.map((score, index) => {
+    const point = pointFor(score, index);
+    return point.x + ',' + point.y;
+  }).join(' ');
+  const gridPolygon = level => SCORE_DIMENSIONS.map((_, index) => {
+    const point = pointFor(maxScore, index, (radius * level) / maxScore);
+    return point.x + ',' + point.y;
+  }).join(' ');
+
+  return (
+    <div style={{ marginBottom: '18px' }}>
+      <h3 style={{ margin: '0 0 10px 0', fontSize: '17px', color: '#1a365d' }}>六维雷达图</h3>
+      <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '14px', background: '#fff' }}>
+        <svg viewBox={'0 0 ' + size + ' ' + size} role="img" aria-label="厌学风险六维雷达图" style={{ width: '100%', maxWidth: '430px', display: 'block', margin: '0 auto' }}>
+          {[1, 2, 3, 4, 5].map(level => (
+            <polygon key={level} points={gridPolygon(level)} fill="none" stroke="#e2e8f0" strokeWidth="1" />
+          ))}
+          {SCORE_DIMENSIONS.map((_, index) => {
+            const point = pointFor(maxScore, index);
+            return <line key={index} x1={center} y1={center} x2={point.x} y2={point.y} stroke="#edf2f7" strokeWidth="1" />;
+          })}
+          <polygon points={polygonPoints(scoreSummary.parentDimensionScores)} fill="none" stroke="#3182ce" strokeWidth="3" strokeLinejoin="round" />
+          {scoreSummary.hasChildAnswers && (
+            <polygon points={polygonPoints(scoreSummary.childDimensionScores)} fill="none" stroke="#dd6b20" strokeWidth="3" strokeLinejoin="round" />
+          )}
+          {scoreSummary.parentDimensionScores.map((score, index) => {
+            const point = pointFor(score, index);
+            return <circle key={'p' + index} cx={point.x} cy={point.y} r="4" fill="#3182ce" />;
+          })}
+          {scoreSummary.hasChildAnswers && scoreSummary.childDimensionScores.map((score, index) => {
+            const point = pointFor(score, index);
+            return <circle key={'c' + index} cx={point.x} cy={point.y} r="4" fill="#dd6b20" />;
+          })}
+          {SCORE_DIMENSIONS.map((dimension, index) => {
+            const labelPoint = pointFor(maxScore, index, radius + 32);
+            return (
+              <text key={dimension} x={labelPoint.x} y={labelPoint.y} textAnchor="middle" dominantBaseline="middle" fontSize="13" fontWeight="700" fill="#2d3748">
+                {dimension}
+              </text>
+            );
+          })}
+        </svg>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '18px', marginTop: '8px', fontSize: '14px', color: '#4a5568' }}>
+          <span><span style={{ display: 'inline-block', width: '18px', height: '3px', background: '#3182ce', verticalAlign: 'middle', marginRight: '6px' }} />家长评分</span>
+          {scoreSummary.hasChildAnswers && <span><span style={{ display: 'inline-block', width: '18px', height: '3px', background: '#dd6b20', verticalAlign: 'middle', marginRight: '6px' }} />孩子评分</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QuestionnaireApp() {
   const [step, setStep] = useState(0); 
   
@@ -439,8 +506,6 @@ function AdminPanel() {
   const firstRecord = result?.data?.[0] || null;
   const scoreSummary = firstRecord ? calculateScoreSummary(firstRecord) : null;
   const resultRow = firstRecord ? buildResultRow(firstRecord, scoreSummary) : null;
-  const displayJson = firstRecord ? JSON.stringify(firstRecord, null, 2) : '';
-
   const copyTable = async () => {
     if (!resultRow) return;
     const headers = Object.keys(resultRow);
@@ -464,25 +529,6 @@ function AdminPanel() {
     URL.revokeObjectURL(url);
   };
 
-  const copyJson = async () => {
-    if (!displayJson) return;
-    await navigator.clipboard.writeText(displayJson);
-    setMessage('已复制查询结果');
-  };
-
-  const downloadJson = () => {
-    if (!displayJson) return;
-    const blob = new Blob([displayJson], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const code = firstRecord.extractionCode || keyword.trim() || 'survey-result';
-    link.href = url;
-    link.download = code + '.json';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
 
   return (
     <div style={{ maxWidth: '980px', margin: '40px auto', fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1a202c', padding: '0 20px' }}>
@@ -529,8 +575,6 @@ function AdminPanel() {
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               <button onClick={copyTable} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>复制表格</button>
               <button onClick={downloadCsv} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>下载 CSV</button>
-              <button onClick={copyJson} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>复制 JSON</button>
-              <button onClick={downloadJson} style={{ padding: '10px 14px', border: '1px solid #cbd5e0', background: '#fff', borderRadius: '8px', cursor: 'pointer' }}>下载 JSON</button>
             </div>
           </div>
 
@@ -569,10 +613,7 @@ function AdminPanel() {
             </div>
           </div>
 
-          <details>
-            <summary style={{ cursor: 'pointer', color: '#4a5568', fontWeight: 'bold', marginBottom: '10px' }}>查看原始 JSON</summary>
-            <pre style={{ margin: 0, padding: '16px', background: '#1a202c', color: '#e2e8f0', borderRadius: '8px', overflowX: 'auto', fontSize: '13px', lineHeight: '1.5' }}>{displayJson}</pre>
-          </details>
+          <RadarChart scoreSummary={scoreSummary} />
         </div>
       )}
     </div>
